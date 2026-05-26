@@ -103,17 +103,6 @@ export default function Dashboard({ status, balance, onToggleBot, onTestEmail, e
         <div style={{ display: 'flex', gap: '12px' }}>
           <button 
             className="btn-primary" 
-            style={{ 
-              background: status.enabled ? 'var(--gradient-red)' : 'var(--gradient-green)',
-              boxShadow: status.enabled ? '0 4px 12px rgba(239, 68, 68, 0.25)' : '0 4px 12px rgba(16, 185, 129, 0.25)'
-            }}
-            onClick={onToggleBot}
-          >
-            {status.enabled ? 'Stop Bot Operations' : 'Start Bot Operations'}
-          </button>
-          
-          <button 
-            className="btn-primary" 
             style={{ background: 'rgba(255, 255, 255, 0.05)', color: 'var(--text-primary)', boxShadow: 'none', border: '1px solid var(--glass-border)' }}
             onClick={onTestEmail}
             disabled={emailTesting}

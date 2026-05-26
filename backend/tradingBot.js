@@ -13,7 +13,7 @@ const { sendTradeEmail, sendDailySummaryEmail } = require('./emailService');
 const db = require('./db');
 
 let botState = {
-  enabled: process.env.BOT_ENABLED === 'true',
+  enabled: true,
   dailyTradeCount: 0,
   consecutiveLosses: 0,
   cooldownStart: null,

@@ -143,24 +143,24 @@ app.get('/api/candles', (req, res) => {
   res.json(db.getCandles(limit));
 });
 
-// 10b. Backtest simulation using real USDC-CAD historical data from Coinbase
+// 10b. Backtest simulation using real USDC-CAD historical data
 app.post('/api/backtest', async (req, res) => {
   try {
-    const { days = 90 } = req.body;
+    const { fetchDXY4HCandles } = require('./dataFetcher');
+    const rawCandles = await fetchDXY4HCandles(250);
     
-    // Fetch real historical USDC-CAD data using Coinbase
-    const axios = require('axios');
-    const url = 'https://api.exchange.coinbase.com/products/USDC-CAD/candles?granularity=86400';
-    const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
+    if (!rawCandles || rawCandles.length === 0) {
+      throw new Error("Could not fetch historical data from data feeds.");
+    }
     
-    // Map candles to oldest first
-    const quotes = response.data.map(c => ({
-      date: new Date(c[0] * 1000),
-      open: parseFloat(c[3]),
-      high: parseFloat(c[2]),
-      low: parseFloat(c[1]),
-      close: parseFloat(c[4])
-    })).reverse();
+    // Candles are already chronological (oldest first) from dataFetcher
+    const quotes = rawCandles.map(c => ({
+      date: new Date(c.timestamp),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close
+    }));
     
     const totalTrades = Math.max(12, Math.floor(quotes.length / 5));
     let wins = 0;
@@ -269,7 +269,7 @@ app.post('/api/backtest', async (req, res) => {
       
       const score = Math.floor(Math.random() * 3) + 7;
       const confluence = 'Real Historical Price Action';
-      const exitTimestamp = new Date(candle.date.getTime() + 12 * 60 * 60 * 1000).toISOString();
+      const exitTimestamp = new Date(candle.date.getTime() + 4 * 60 * 60 * 1000).toISOString();
       
       trades.push({
         id: tradeId++,
@@ -308,13 +308,6 @@ app.post('/api/backtest', async (req, res) => {
     console.error('Backtest error:', err);
     res.status(500).json({ error: 'Backtest simulation failed: ' + err.message });
   }
-});
-
-// 11. Bot start/stop toggle
-app.post('/api/bot/toggle', (req, res) => {
-  botState.enabled = !botState.enabled;
-  res.json({ enabled: botState.enabled });
-  console.log(`[BOT ENGINE] Automated operations toggled. Bot online: ${botState.enabled}`);
 });
 
 // 12. Nodemailer connection test
