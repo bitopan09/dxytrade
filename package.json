@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "description": "DXY trading bot with 9-factor confluence strategy",
   "scripts": {
-    "start": "concurrently \"npm run backend\" \"npm run dev:frontend\"",
-    "backend": "node backend/server.js",
+    "start": "node backend/server.js",
+    "build": "npm install && cd frontend && npm install && npm run build",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "nodemon backend/server.js",
     "dev:frontend": "cd frontend && npm run dev",
     "setup": "npm install && cd frontend && npm install"
