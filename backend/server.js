@@ -181,8 +181,11 @@ app.post('/api/backtest', async (req, res) => {
     for (let i = 10; i < quotes.length - 2; i += Math.floor(quotes.length / totalTrades) || 1) {
       if (tradeId > totalTrades) break;
       
-      // Equity Floor Protection — skip trade if balance is at base capital
-      if (equity <= EQUITY_FLOOR && tradeId > 1) break;
+      // Stop completely if the account is blown
+      if (equity <= 0) {
+          equity = 0;
+          break;
+      }
       
       // Calculate Tiered Base Capital
       let baseCapital = 50;
@@ -193,9 +196,8 @@ app.post('/api/backtest', async (req, res) => {
           }
           baseCapital = tempBase;
       }
-      // Optimized: 20% risk, capped so balance never drops below floor
-      const maxRiskable = equity - EQUITY_FLOOR;
-      const riskAmount = Math.min(baseCapital * 0.20, maxRiskable);
+      // Optimized: 20% risk, capped so balance never drops below 0
+      const riskAmount = Math.min(baseCapital * 0.20, equity);
       
       const candle = quotes[i];
       const entryPrice = candle.open;
