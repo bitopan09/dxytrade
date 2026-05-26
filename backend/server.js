@@ -269,7 +269,7 @@ app.post('/api/backtest', async (req, res) => {
       equity = parseFloat((equity + pnl).toFixed(2));
       equityCurve.push({ day: tradeId, equity });
       
-      const score = Math.floor(Math.random() * 3) + 7;
+      const score = Math.floor(seededRandom() * 3) + 7;
       const confluence = 'Real Historical Price Action';
       const exitTimestamp = new Date(candle.date.getTime() + 4 * 60 * 60 * 1000).toISOString();
       

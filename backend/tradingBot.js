@@ -155,8 +155,8 @@ async function performMarketAnalysis() {
 
 // ==================== CRON SCHEDULES ====================
 
-// A. Analysis loop - runs every 15 minutes
-cron.schedule('*/15 * * * *', async () => {
+// A. Analysis loop - runs every minute
+cron.schedule('* * * * *', async () => {
   await performMarketAnalysis();
 });
 
