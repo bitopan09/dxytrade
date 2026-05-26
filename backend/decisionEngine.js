@@ -48,7 +48,7 @@ async function generateSignal(
   }
   
   // --- GATE 3: Daily Trade Limit Circuit Breaker ---
-  const dailyLimit = parseInt(process.env.DAILY_TRADE_LIMIT || 1);
+  const dailyLimit = parseInt(process.env.DAILY_TRADE_LIMIT || 3); // Increased to 3 for small account compounding
   if ((botState.dailyTradeCount || 0) >= dailyLimit) {
     return { signal: 'NONE', reason: `Daily trade limit reached (${botState.dailyTradeCount}/${dailyLimit})` };
   }
@@ -65,7 +65,7 @@ async function generateSignal(
 
   // --- SCORE CONFLUENCE IN BOTH DIRECTIONS ---
   const results = {};
-  const threshold = parseInt(process.env.CONFLUENCE_THRESHOLD || 6);
+  const threshold = parseInt(process.env.CONFLUENCE_THRESHOLD || 5); // Lowered to 5 for more aggressive setups
   
   for (const direction of ['BUY', 'SELL']) {
     const factors = {

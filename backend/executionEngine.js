@@ -51,7 +51,11 @@ async function executeTrade(signal, quantity = 0.15, isManual = false, livePrice
     
     // Cap the risk amount so a single trade can never push balance below the floor
     const maxRiskable = currentBalance - EQUITY_FLOOR;
-    const riskAmount = Math.min(baseCapital * 0.20, maxRiskable); // 20% of active tier, capped at available risk room
+    
+    // Aggressive risk sizing for small accounts
+    // 35% risk for accounts under $200, 25% above
+    const riskPct = currentBalance < 200 ? 0.35 : 0.25;
+    const riskAmount = Math.min(baseCapital * riskPct, maxRiskable);
 
     // Calculate dynamic position size (quantity in lots) based on risk amount
     const slDistance = Math.max(Math.abs(entryPrice - sl), 0.0001); // Prevent division by zero

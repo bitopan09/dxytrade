@@ -143,14 +143,15 @@ app.get('/api/candles', (req, res) => {
   res.json(db.getCandles(limit));
 });
 
-// 10b. Backtest simulation using real USDC-CAD historical data
+// 10b. Backtest simulation using real historical data — Optimized for small accounts
 app.post('/api/backtest', async (req, res) => {
   try {
     const { fetchDXY4HCandles } = require('./dataFetcher');
+    const { calculateATR } = require('./analysisEngine');
     const rawCandles = await fetchDXY4HCandles(250);
     
-    if (!rawCandles || rawCandles.length === 0) {
-      throw new Error("Could not fetch historical data from data feeds.");
+    if (!rawCandles || rawCandles.length < 30) {
+      throw new Error("Could not fetch sufficient historical data from data feeds.");
     }
     
     // Candles are already chronological (oldest first) from dataFetcher
@@ -161,13 +162,46 @@ app.post('/api/backtest', async (req, res) => {
       low: c.low,
       close: c.close
     }));
-    
-    const totalTrades = Math.max(12, Math.floor(quotes.length / 5));
-    let wins = 0;
-    const trades = [];
-    let equity = 50.00;
-    const equityCurve = [{ day: 0, equity: 50.00 }];
-    const EQUITY_FLOOR = 50.00;
+
+    // --- Helper: compute a simple EMA on an array of numbers ---
+    function ema(values, period) {
+      const k = 2 / (period + 1);
+      const result = [values[0]];
+      for (let i = 1; i < values.length; i++) {
+        result.push(values[i] * k + result[i - 1] * (1 - k));
+      }
+      return result;
+    }
+
+    // Pre-compute EMAs for smart direction detection
+    const closes = quotes.map(c => c.close);
+    const ema8  = ema(closes, 8);
+    const ema21 = ema(closes, 21);
+
+    // Pre-compute ATR for each candle (rolling 10-period)
+    function rollingATR(quotes, period) {
+      const atrs = new Array(quotes.length).fill(0.0020);
+      for (let i = 1; i < quotes.length; i++) {
+        const tr = Math.max(
+          quotes[i].high - quotes[i].low,
+          Math.abs(quotes[i].high - quotes[i - 1].close),
+          Math.abs(quotes[i].low - quotes[i - 1].close)
+        );
+        if (i < period) {
+          // Simple average until we have enough bars
+          let sum = tr;
+          for (let j = Math.max(1, i - period + 1); j < i; j++) {
+            const jtr = Math.max(quotes[j].high - quotes[j].low, Math.abs(quotes[j].high - quotes[j-1].close), Math.abs(quotes[j].low - quotes[j-1].close));
+            sum += jtr;
+          }
+          atrs[i] = sum / Math.min(i, period);
+        } else {
+          atrs[i] = (atrs[i - 1] * (period - 1) + tr) / period;
+        }
+      }
+      return atrs;
+    }
+    const atrs = rollingATR(quotes, 10);
     
     // Seeded random for deterministic, reproducible results on every run
     let seed = 42;
@@ -176,133 +210,139 @@ app.post('/api/backtest', async (req, res) => {
       return (seed >>> 0) / 0xFFFFFFFF;
     }
     
+    let wins = 0, losses = 0;
+    const trades = [];
+    let equity = 50.00;
+    let peakEquity = 50.00;
+    let maxDrawdown = 0;
+    const equityCurve = [{ day: 0, equity: 50.00 }];
     let tradeId = 1;
-    // Iterate through real data to generate trades
-    for (let i = 10; i < quotes.length - 2; i += Math.floor(quotes.length / totalTrades) || 1) {
-      if (tradeId > totalTrades) break;
-      
+    let totalPnlWins = 0, totalPnlLosses = 0;
+    
+    // Scan every 3rd candle for more trade opportunities (was every 5th)
+    for (let i = 22; i < quotes.length - 1; i += 3) {
       // Stop completely if the account is blown
-      if (equity <= 0) {
-          equity = 0;
-          break;
-      }
-      
-      // Calculate Tiered Base Capital
-      let baseCapital = 50;
-      let tempBase = 50;
-      if (equity >= 100) {
-          while (tempBase * 2 <= equity) {
-              tempBase *= 2;
-          }
-          baseCapital = tempBase;
-      }
-      // Optimized: 20% risk, capped so balance never drops below 0
-      const riskAmount = Math.min(baseCapital * 0.20, equity);
+      if (equity <= 0) { equity = 0; break; }
       
       const candle = quotes[i];
-      const entryPrice = candle.open;
+      const nextCandle = quotes[i + 1]; // Use next candle for SL/TP checking
+      const entryPrice = candle.close;   // Enter at close of signal candle
+      const atr = atrs[i];
       
-      const prevCandle = quotes[i - 1];
-      const isBuy = candle.open > prevCandle.close;
+      // --- Smart Direction: EMA-8 / EMA-21 crossover momentum ---
+      const ema8Now  = ema8[i];
+      const ema21Now = ema21[i];
+      const ema8Prev = ema8[i - 1];
+      const ema21Prev = ema21[i - 1];
       
-      // Optimized: Tighter SL distance (0.7x of original 0.0035 = 0.00245)
-      const slDistance = 0.00245;
+      // Must have clear EMA alignment, not just a cross
+      const isBuy  = ema8Now > ema21Now && ema8Prev > ema21Prev && candle.close > ema8Now;
+      const isSell = ema8Now < ema21Now && ema8Prev < ema21Prev && candle.close < ema8Now;
       
-      // Calculate dynamic quantity in lots based on the target USD risk
-      const conversionRateForQty = entryPrice; 
-      const quantityRaw = (riskAmount * conversionRateForQty) / (slDistance * 100000);
+      if (!isBuy && !isSell) continue; // Skip — no clear momentum
+      const direction = isBuy ? 'BUY' : 'SELL';
+      
+      // --- Aggressive risk sizing for small accounts ---
+      // 35% risk for accounts under $200, 25% above
+      const riskPct = equity < 200 ? 0.35 : 0.25;
+      const riskAmount = Math.min(equity * riskPct, equity);
+      
+      // --- ATR-based dynamic SL/TP (tighter SL, wider TP for better R:R) ---
+      const slDistance  = atr * 0.8;   // Tight: 0.8x ATR stop
+      const tp1Distance = atr * 2.0;  // 2.5:1 R:R 
+      const tp2Distance = atr * 4.0;  // 5:1 R:R
+      
+      const sl  = parseFloat((isBuy ? entryPrice - slDistance : entryPrice + slDistance).toFixed(5));
+      const tp1 = parseFloat((isBuy ? entryPrice + tp1Distance : entryPrice - tp1Distance).toFixed(5));
+      const tp2 = parseFloat((isBuy ? entryPrice + tp2Distance : entryPrice - tp2Distance).toFixed(5));
+      
+      // Dynamic lot sizing
+      const quantityRaw = (riskAmount * entryPrice) / (slDistance * 100000);
       let quantity = parseFloat(quantityRaw.toFixed(2)) || 0.01;
-      
-      // Dynamic Lot Size Constraint: 0.01 to 0.1 max
       if (quantity < 0.01) quantity = 0.01;
       if (quantity > 0.10) quantity = 0.10;
       
-      const sl = parseFloat((isBuy ? entryPrice - 0.0035 : entryPrice + 0.0035).toFixed(5));
-      const tp1 = parseFloat((isBuy ? entryPrice + 0.0045 : entryPrice - 0.0045).toFixed(5));
-      const tp2 = parseFloat((isBuy ? entryPrice + 0.0080 : entryPrice - 0.0080).toFixed(5));
-      
-      // Real Backtest Logic: check actual candle high/low against SL/TP levels
-      let exitPrice = candle.close;
+      // --- Check next candle's OHLC for realistic SL/TP hit detection ---
+      let exitPrice = nextCandle.close;
       let exitReason = 'Time Exit';
       let isWin = false;
       
       if (isBuy) {
-          if (candle.low <= sl) {
-              exitPrice = sl;
-              exitReason = 'Stop Loss';
-          } else if (candle.high >= tp2) {
-              exitPrice = tp2;
-              exitReason = 'Take Profit 2';
-              isWin = true;
-          } else if (candle.high >= tp1) {
-              exitPrice = tp1;
-              exitReason = 'Take Profit 1';
-              isWin = true;
-          } else if (candle.close > entryPrice) {
-              isWin = true; // Ended day in profit but didn't hit TP
-          }
-      } else { // SELL
-          if (candle.high >= sl) {
-              exitPrice = sl;
-              exitReason = 'Stop Loss';
-          } else if (candle.low <= tp2) {
-              exitPrice = tp2;
-              exitReason = 'Take Profit 2';
-              isWin = true;
-          } else if (candle.low <= tp1) {
-              exitPrice = tp1;
-              exitReason = 'Take Profit 1';
-              isWin = true;
-          } else if (candle.close < entryPrice) {
-              isWin = true; // Ended day in profit but didn't hit TP
-          }
+        if (nextCandle.low <= sl) {
+          exitPrice = sl; exitReason = 'Stop Loss';
+        } else if (nextCandle.high >= tp2) {
+          exitPrice = tp2; exitReason = 'Take Profit 2'; isWin = true;
+        } else if (nextCandle.high >= tp1) {
+          exitPrice = tp1; exitReason = 'Take Profit 1'; isWin = true;
+        } else if (nextCandle.close > entryPrice) {
+          isWin = true; exitReason = 'Momentum Exit';
+        }
+      } else {
+        if (nextCandle.high >= sl) {
+          exitPrice = sl; exitReason = 'Stop Loss';
+        } else if (nextCandle.low <= tp2) {
+          exitPrice = tp2; exitReason = 'Take Profit 2'; isWin = true;
+        } else if (nextCandle.low <= tp1) {
+          exitPrice = tp1; exitReason = 'Take Profit 1'; isWin = true;
+        } else if (nextCandle.close < entryPrice) {
+          isWin = true; exitReason = 'Momentum Exit';
+        }
       }
       
-      if (isWin) wins++;
+      if (isWin) wins++; else losses++;
 
       const pointDiff = isBuy ? exitPrice - entryPrice : entryPrice - exitPrice;
+      const pnl = parseFloat(((pointDiff * quantity * 100000) / exitPrice).toFixed(2));
       
-      // True Forex P&L Math: point difference * quantity * lot size / conversionRate
-      const conversionRate = exitPrice; 
-      const pnl = parseFloat(((pointDiff * quantity * 100000) / conversionRate).toFixed(2));
+      if (pnl > 0) totalPnlWins += pnl;
+      if (pnl < 0) totalPnlLosses += Math.abs(pnl);
       
       equity = parseFloat((equity + pnl).toFixed(2));
+      if (equity > peakEquity) peakEquity = equity;
+      const dd = peakEquity > 0 ? (peakEquity - equity) / peakEquity : 0;
+      if (dd > maxDrawdown) maxDrawdown = dd;
+      
       equityCurve.push({ day: tradeId, equity });
       
       const score = Math.floor(seededRandom() * 3) + 7;
-      const confluence = 'Real Historical Price Action';
-      const exitTimestamp = new Date(candle.date.getTime() + 4 * 60 * 60 * 1000).toISOString();
+      const exitTimestamp = new Date(nextCandle.date.getTime()).toISOString();
       
       trades.push({
         id: tradeId++,
         timestamp: candle.date.toISOString(),
         opened_at: candle.date.toISOString(),
-        action: isBuy ? 'BUY' : 'SELL',
+        action: direction,
         entryPrice: parseFloat(entryPrice.toFixed(5)),
-        exitPrice: exitPrice,
+        exitPrice: parseFloat(exitPrice.toFixed(5)),
         pnl: pnl,
         status: 'CLOSED',
         quantity: quantity,
-        sl: sl,
-        tp1: tp1,
-        tp2: tp2,
+        sl: sl, tp1: tp1, tp2: tp2,
         score: score,
-        confluence: confluence,
+        confluence: 'EMA Momentum + ATR Risk',
         exitReason: exitReason,
         exitTimestamp: exitTimestamp
       });
     }
     
-    const profitFactor = wins > 0 ? 2.85 : 0;
+    const totalTrades = tradeId - 1;
+    const winRate = totalTrades > 0 ? wins / totalTrades : 0;
+    const profitFactor = totalPnlLosses > 0 ? parseFloat((totalPnlWins / totalPnlLosses).toFixed(2)) : (totalPnlWins > 0 ? 99.0 : 0);
     const totalReturn = (equity - 50.00) / 50.00;
     
+    // Compute Sharpe Ratio from trade returns
+    const returns = trades.map(t => t.pnl);
+    const avgReturn = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
+    const stdDev = returns.length > 1 ? Math.sqrt(returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / (returns.length - 1)) : 1;
+    const sharpeRatio = stdDev > 0 ? parseFloat((avgReturn / stdDev * Math.sqrt(252)).toFixed(2)) : 0;
+    
     res.json({
-      totalTrades: tradeId - 1,
-      winRate: wins / (tradeId - 1),
+      totalTrades,
+      winRate: parseFloat(winRate.toFixed(4)),
       profitFactor,
-      maxDrawdown: 0.041,
-      sharpeRatio: 2.75,
-      totalReturn,
+      maxDrawdown: parseFloat(maxDrawdown.toFixed(4)),
+      sharpeRatio,
+      totalReturn: parseFloat(totalReturn.toFixed(4)),
       equityCurve,
       trades: trades.reverse()
     });

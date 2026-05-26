@@ -8,8 +8,8 @@
  */
 function calculateStopLoss(action, entryPrice, atr, weeklyCPR) {
   const { BC, TC } = weeklyCPR || { BC: entryPrice - 0.0050, TC: entryPrice + 0.0050 };
-  const atrMultiplier = 1.05; // Optimized: 0.7x of original 1.5 → tighter SL for better position sizing
-  const minStop = atr * 0.35; // Tighter floor (0.7x of 0.5) to match optimized SL
+  const atrMultiplier = 0.8; // Tight stop: 0.8x ATR for maximum position sizing on small accounts
+  const minStop = atr * 0.25; // Floor at 0.25x ATR — tight enough for micro accounts
   
   let sl;
   
@@ -40,8 +40,8 @@ function calculateStopLoss(action, entryPrice, atr, weeklyCPR) {
  */
 function calculateTakeProfits(action, entryPrice, stopLoss) {
   const risk = Math.abs(entryPrice - stopLoss);
-  const tp1Distance = risk * 2.0;  // 1:2 RR (optimized from 1:1.5)
-  const tp2Distance = risk * 4.0;  // 1:4 RR (optimized from 1:3)
+  const tp1Distance = risk * 2.5;  // 1:2.5 RR — aggressive small-account targets
+  const tp2Distance = risk * 5.0;  // 1:5 RR — let big winners run
   
   if (action === 'BUY') {
     return {
@@ -76,14 +76,20 @@ function updateTrailingStop(trade, currentPrice, atr) {
   let newSL = stop_loss;
   const totalProfit = Math.abs(currentPrice - entry_price);
   
-  // Phase 2 Trail: PnL reaches 4.0x risk -> Trail to Break-Even + 60% of total profit
-  if (unrealizedGainUnits >= 4.0) {
+  // Phase 3 Trail: PnL reaches 3.5x risk -> Lock in 65% of total profit
+  if (unrealizedGainUnits >= 3.5) {
     newSL = action === 'BUY'
-      ? entry_price + (totalProfit * 0.60)
-      : entry_price - (totalProfit * 0.60);
+      ? entry_price + (totalProfit * 0.65)
+      : entry_price - (totalProfit * 0.65);
+  }
+  // Phase 2 Trail: PnL reaches 2.0x risk -> Lock in 40% of total profit
+  else if (unrealizedGainUnits >= 2.0) {
+    newSL = action === 'BUY'
+      ? entry_price + (totalProfit * 0.40)
+      : entry_price - (totalProfit * 0.40);
   } 
-  // Phase 1 Trail: PnL reaches 2.5x risk -> Trail to Break-Even + 10% of total profit
-  else if (unrealizedGainUnits >= 2.5) {
+  // Phase 1 Trail: PnL reaches 1.2x risk -> Move to break-even + 10%
+  else if (unrealizedGainUnits >= 1.2) {
     newSL = action === 'BUY'
       ? entry_price + (totalProfit * 0.10)
       : entry_price - (totalProfit * 0.10);
