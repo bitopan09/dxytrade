@@ -90,7 +90,11 @@ async function generateSignal(
   // --- GATE 5: Conflicting Signal Guard ---
   // If both directions score above threshold, the market is highly erratic. Skip to save capital.
   if (buyScore >= threshold && sellScore >= threshold) {
-    return { signal: 'NONE', reason: `Conflicting high-score signals (BUY: ${buyScore}, SELL: ${sellScore})` };
+    return { 
+      signal: 'NONE', 
+      score: Math.max(buyScore, sellScore),
+      reason: `Conflicting high-score signals (BUY: ${buyScore}, SELL: ${sellScore})` 
+    };
   }
   
   // Select highest score that meets the threshold
@@ -116,6 +120,7 @@ async function generateSignal(
   
   return { 
     signal: 'NONE', 
+    score: Math.max(buyScore, sellScore),
     reason: `Score below threshold (BUY: ${buyScore}/9, SELL: ${sellScore}/9, Required: ${threshold})` 
   };
 }
