@@ -21,6 +21,18 @@ const BotStatus = () => {
         setEmailTesting(false);
         setTimeout(() => setEmailMessage(null), 5000);
     };
+
+    const toggleBot = async () => {
+        try {
+            const res = await axios.post(`${API_BASE_URL}/bot/toggle`);
+            setStatus(prev => ({
+                ...prev, 
+                bot: { ...prev.bot, isRunning: res.data.enabled }
+            }));
+        } catch (error) {
+            console.error('Error toggling bot:', error);
+        }
+    };
     useEffect(() => {
         const fetchStatus = async () => {
             try {
@@ -60,13 +72,23 @@ const BotStatus = () => {
                         </p>
                     )}
                     
-                    <button 
-                        onClick={testEmail} 
-                        disabled={emailTesting}
-                        style={{ marginTop: '12px', padding: '6px 12px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem' }}
-                    >
-                        {emailTesting ? 'Sending...' : 'Test Email Alert'}
-                    </button>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                        <button 
+                            onClick={toggleBot} 
+                            style={{ padding: '6px 12px', background: bot.isRunning ? '#ef4444' : '#10b981', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem' }}
+                        >
+                            {bot.isRunning ? 'Stop Bot' : 'Start Bot'}
+                        </button>
+
+                        <button 
+                            onClick={testEmail} 
+                            disabled={emailTesting}
+                            style={{ padding: '6px 12px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '0.85rem' }}
+                        >
+                            {emailTesting ? 'Sending...' : 'Test Email Alert'}
+                        </button>
+                    </div>
+
                     {emailMessage && (
                         <p style={{ fontSize: '0.8rem', marginTop: '6px', color: emailMessage.type === 'success' ? '#4ade80' : '#f87171' }}>
                             {emailMessage.text}
