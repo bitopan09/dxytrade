@@ -92,8 +92,6 @@ async function syncBotFeeds() {
  * Analyzes market indicators, manages trailing stops, checks SL/TP hits, and enters new trades.
  */
 async function performMarketAnalysis() {
-  if (!botState.enabled) return;
-
   try {
     console.log('[BOT ENGINE] Running periodic market analysis tick...');
     
@@ -109,6 +107,7 @@ async function performMarketAnalysis() {
     botState.lastAnalysis = new Date().toISOString();
 
     // Check existing trades - update trailing stops and evaluate exit signals
+    // (We want to manage open trades even if the bot is "paused" from taking new ones)
     await manageOpenTrades(candles, botState);
 
     // Refresh peer components and CPR bounds for decision engine
@@ -131,7 +130,8 @@ async function performMarketAnalysis() {
 
     console.log('[BOT ENGINE] Confluence Scan Result:', signal.signal, signal.reason || `Score: ${signal.score}/9`);
 
-    if (signal.signal !== 'NONE') {
+    // Only execute new trades if the bot is currently ENABLED
+    if (signal.signal !== 'NONE' && botState.enabled) {
       const result = await executeTrade(signal, 0.15, false, botState.lastPrice); // Default quantity = 0.15 lots
       if (result.success) {
         botState.dailyTradeCount++;
@@ -225,7 +225,9 @@ function broadcastStatus() {
       consecutiveLosses: botState.consecutiveLosses,
       cooldownActive: botState.consecutiveLosses >= 2,
       cooldownStart: botState.cooldownStart,
-      cot: botState.cachedCOT
+      cot: botState.cachedCOT,
+      currentScore: botState.currentScore,
+      currentSignal: botState.currentSignal
     });
     
     global.wss.clients.forEach(client => {
@@ -240,6 +242,8 @@ function broadcastStatus() {
 async function initBot() {
   restoreState();
   await syncBotFeeds();
+  // Perform an immediate analysis cycle so the dashboard shows real-time scores right after boot
+  await performMarketAnalysis();
   console.log('[BOT ENGINE] Bot orchestrator fully initialized and operational!');
 }
 
