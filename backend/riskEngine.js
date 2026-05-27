@@ -8,8 +8,8 @@
  */
 function calculateStopLoss(action, entryPrice, atr, weeklyCPR) {
   const { BC, TC } = weeklyCPR || { BC: entryPrice - 0.0050, TC: entryPrice + 0.0050 };
-  const atrMultiplier = 1.05; // Optimized: 0.7x of original 1.5 → tighter SL for better position sizing
-  const minStop = atr * 0.35; // Tighter floor (0.7x of 0.5) to match optimized SL
+  const atrMultiplier = 0.9; // Tighter SL for better position sizing on small accounts
+  const minStop = atr * 0.30; // Tight floor to maximize lot size
   
   let sl;
   
@@ -40,8 +40,8 @@ function calculateStopLoss(action, entryPrice, atr, weeklyCPR) {
  */
 function calculateTakeProfits(action, entryPrice, stopLoss) {
   const risk = Math.abs(entryPrice - stopLoss);
-  const tp1Distance = risk * 2.0;  // 1:2 RR (optimized from 1:1.5)
-  const tp2Distance = risk * 4.0;  // 1:4 RR (optimized from 1:3)
+  const tp1Distance = risk * 2.5;  // 1:2.5 RR — lets winners run further
+  const tp2Distance = risk * 4.5;  // 1:4.5 RR — big payoff on strong trends
   
   if (action === 'BUY') {
     return {
@@ -76,14 +76,20 @@ function updateTrailingStop(trade, currentPrice, atr) {
   let newSL = stop_loss;
   const totalProfit = Math.abs(currentPrice - entry_price);
   
-  // Phase 2 Trail: PnL reaches 4.0x risk -> Trail to Break-Even + 60% of total profit
-  if (unrealizedGainUnits >= 4.0) {
+  // Phase 3 Trail: PnL reaches 3.5x risk -> Lock in 60% of profit
+  if (unrealizedGainUnits >= 3.5) {
     newSL = action === 'BUY'
       ? entry_price + (totalProfit * 0.60)
       : entry_price - (totalProfit * 0.60);
   } 
-  // Phase 1 Trail: PnL reaches 2.5x risk -> Trail to Break-Even + 10% of total profit
-  else if (unrealizedGainUnits >= 2.5) {
+  // Phase 2 Trail: PnL reaches 2.0x risk -> Lock in 35% of profit
+  else if (unrealizedGainUnits >= 2.0) {
+    newSL = action === 'BUY'
+      ? entry_price + (totalProfit * 0.35)
+      : entry_price - (totalProfit * 0.35);
+  }
+  // Phase 1 Trail: PnL reaches 1.5x risk -> Move to break-even + 10%
+  else if (unrealizedGainUnits >= 1.5) {
     newSL = action === 'BUY'
       ? entry_price + (totalProfit * 0.10)
       : entry_price - (totalProfit * 0.10);

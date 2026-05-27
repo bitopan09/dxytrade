@@ -15,7 +15,8 @@ const { isBlackedOut } = require('./newsFilter');
 
 /**
  * Main signal generation logic.
- * Evaluates risk gates first, then calculates confluence scores for BUY and SELL.
+ * ALWAYS calculates confluence scores first (for dashboard display),
+ * then evaluates risk gates to decide whether to actually execute.
  */
 async function generateSignal(
   candles,
@@ -27,45 +28,19 @@ async function generateSignal(
   botState
 ) {
   if (!candles || candles.length === 0) {
-    return { signal: 'NONE', reason: 'Insufficient price candles' };
+    return { signal: 'NONE', score: 0, reason: 'Insufficient price candles' };
   }
 
   const currentPrice = candles[candles.length - 1].close;
   const weeklyCPR = calculateWeeklyCPR(weeklyCandles);
   const now = new Date();
   const nowUTC = now.toISOString();
-  
-  // --- GATE 1: Session Hour Check ---
-  // London & NY Session peak liquidity overlap: 08:00 - 20:00 UTC
-  const hourUTC = now.getUTCHours();
-  if (hourUTC < 8 || hourUTC >= 20) {
-    return { signal: 'NONE', reason: `Outside London/NY session hours (08-20 UTC, Current: ${hourUTC} UTC)` };
-  }
-  
-  // --- GATE 2: Macro Economic News Blackout ---
-  if (isBlackedOut(newsEvents, nowUTC)) {
-    return { signal: 'NONE', reason: 'Economic calendar high-impact blackout active' };
-  }
-  
-  // --- GATE 3: Daily Trade Limit Circuit Breaker ---
-  const dailyLimit = parseInt(process.env.DAILY_TRADE_LIMIT || 1);
-  if ((botState.dailyTradeCount || 0) >= dailyLimit) {
-    return { signal: 'NONE', reason: `Daily trade limit reached (${botState.dailyTradeCount}/${dailyLimit})` };
-  }
-  
-  // --- GATE 4: Loss Streak Cooldown Circuit Breaker ---
-  if ((botState.consecutiveLosses || 0) >= 2) {
-    const cooldownStart = new Date(botState.cooldownStart);
-    const cooldownExpiry = new Date(cooldownStart.getTime() + 24 * 60 * 60 * 1000); // 24 Hours Cooldown
-    if (now < cooldownExpiry) {
-      const remainingHrs = ((cooldownExpiry - now) / (1000 * 60 * 60)).toFixed(1);
-      return { signal: 'NONE', reason: `24H Cooldown active after consecutive losses (${remainingHrs} hrs remaining)` };
-    }
-  }
+  const threshold = parseInt(process.env.CONFLUENCE_THRESHOLD || 5);
 
-  // --- SCORE CONFLUENCE IN BOTH DIRECTIONS ---
+  // ============================================================
+  // STEP 1: ALWAYS calculate confluence scores (for dashboard)
+  // ============================================================
   const results = {};
-  const threshold = parseInt(process.env.CONFLUENCE_THRESHOLD || 6);
   
   for (const direction of ['BUY', 'SELL']) {
     const factors = {
@@ -86,13 +61,49 @@ async function generateSignal(
   
   const buyScore = results['BUY'].score;
   const sellScore = results['SELL'].score;
+  const bestScore = Math.max(buyScore, sellScore);
+  const bestDirection = buyScore >= sellScore ? 'BUY' : 'SELL';
+
+  // ============================================================
+  // STEP 2: Apply risk gates (only blocks EXECUTION, not scoring)
+  // ============================================================
+
+  // --- GATE 1: Session Hour Check ---
+  const hourUTC = now.getUTCHours();
+  if (hourUTC < 8 || hourUTC >= 20) {
+    return { signal: 'NONE', score: bestScore, reason: `Outside London/NY session hours (08-20 UTC, Current: ${hourUTC} UTC)` };
+  }
+  
+  // --- GATE 2: Macro Economic News Blackout ---
+  if (isBlackedOut(newsEvents, nowUTC)) {
+    return { signal: 'NONE', score: bestScore, reason: 'Economic calendar high-impact blackout active' };
+  }
+  
+  // --- GATE 3: Daily Trade Limit Circuit Breaker ---
+  const dailyLimit = parseInt(process.env.DAILY_TRADE_LIMIT || 2);
+  if ((botState.dailyTradeCount || 0) >= dailyLimit) {
+    return { signal: 'NONE', score: bestScore, reason: `Daily trade limit reached (${botState.dailyTradeCount}/${dailyLimit})` };
+  }
+  
+  // --- GATE 4: Loss Streak Cooldown Circuit Breaker ---
+  if ((botState.consecutiveLosses || 0) >= 2) {
+    const cooldownStart = new Date(botState.cooldownStart);
+    const cooldownExpiry = new Date(cooldownStart.getTime() + 24 * 60 * 60 * 1000);
+    if (now < cooldownExpiry) {
+      const remainingHrs = ((cooldownExpiry - now) / (1000 * 60 * 60)).toFixed(1);
+      return { signal: 'NONE', score: bestScore, reason: `24H Cooldown active after consecutive losses (${remainingHrs} hrs remaining)` };
+    }
+  }
+
+  // ============================================================
+  // STEP 3: Evaluate trade signals
+  // ============================================================
   
   // --- GATE 5: Conflicting Signal Guard ---
-  // If both directions score above threshold, the market is highly erratic. Skip to save capital.
   if (buyScore >= threshold && sellScore >= threshold) {
     return { 
       signal: 'NONE', 
-      score: Math.max(buyScore, sellScore),
+      score: bestScore,
       reason: `Conflicting high-score signals (BUY: ${buyScore}, SELL: ${sellScore})` 
     };
   }
@@ -120,9 +131,10 @@ async function generateSignal(
   
   return { 
     signal: 'NONE', 
-    score: Math.max(buyScore, sellScore),
+    score: bestScore,
     reason: `Score below threshold (BUY: ${buyScore}/9, SELL: ${sellScore}/9, Required: ${threshold})` 
   };
 }
 
 module.exports = { generateSignal };
+
