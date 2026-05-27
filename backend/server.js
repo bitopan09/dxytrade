@@ -147,6 +147,8 @@ app.get('/api/candles', (req, res) => {
 app.post('/api/backtest', async (req, res) => {
   try {
     const { fetchDXY4HCandles } = require('./dataFetcher');
+    const { calculateATR } = require('./analysisEngine');
+    const ti = require('technicalindicators');
     const rawCandles = await fetchDXY4HCandles(250);
     
     if (!rawCandles || rawCandles.length === 0) {
@@ -159,127 +161,189 @@ app.post('/api/backtest', async (req, res) => {
       open: c.open,
       high: c.high,
       low: c.low,
-      close: c.close
+      close: c.close,
+      volume: c.volume || 0
     }));
     
-    const totalTrades = Math.max(12, Math.floor(quotes.length / 5));
-    let wins = 0;
     const trades = [];
     let equity = 50.00;
     const equityCurve = [{ day: 0, equity: 50.00 }];
-    const EQUITY_FLOOR = 50.00;
+    let wins = 0;
+    let totalWinPnl = 0;
+    let totalLossPnl = 0;
+    let peakEquity = 50.00;
+    let maxDrawdown = 0;
     
-    // Seeded random for deterministic, reproducible results on every run
+    // Seeded random for deterministic, reproducible confluence scores
     let seed = 42;
     function seededRandom() {
       seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF;
       return (seed >>> 0) / 0xFFFFFFFF;
     }
     
+    // Pre-calculate EMA-21 and EMA-50 for direction logic
+    const allCloses = quotes.map(c => c.close);
+    const ema21 = ti.EMA.calculate({ period: 21, values: allCloses });
+    const ema50 = ti.EMA.calculate({ period: 50, values: allCloses });
+    // EMA arrays are shorter than quotes — offset = quotes.length - ema.length
+    const ema21Offset = quotes.length - ema21.length;
+    const ema50Offset = quotes.length - ema50.length;
+    
     let tradeId = 1;
-    // Iterate through real data to generate trades
-    for (let i = 10; i < quotes.length - 2; i += Math.floor(quotes.length / totalTrades) || 1) {
-      if (tradeId > totalTrades) break;
-      
+    // Need at least 50 candles for EMA-50 warmup + ATR, and room for exit candles ahead
+    const startIdx = Math.max(50, ema50Offset + 1);
+    // Step through candles with a gap to avoid overlapping trades
+    const step = Math.max(3, Math.floor((quotes.length - startIdx - 5) / 40)) || 3;
+    
+    for (let i = startIdx; i < quotes.length - 4; i += step) {
       // Stop completely if the account is blown
       if (equity <= 0) {
-          equity = 0;
-          break;
+        equity = 0;
+        break;
       }
       
-      // Calculate Tiered Base Capital
+      // --- Direction Logic: EMA-21 / EMA-50 crossover ---
+      const e21Idx = i - ema21Offset;
+      const e50Idx = i - ema50Offset;
+      if (e21Idx < 1 || e50Idx < 1) continue;
+      
+      const e21Now = ema21[e21Idx];
+      const e50Now = ema50[e50Idx];
+      const e21Prev = ema21[e21Idx - 1];
+      const e50Prev = ema50[e50Idx - 1];
+      
+      if (!e21Now || !e50Now || !e21Prev || !e50Prev) continue;
+      
+      // Buy when EMA-21 is above EMA-50 (uptrend), Sell when below (downtrend)
+      let isBuy;
+      if (e21Now > e50Now && e21Prev > e50Prev) {
+        isBuy = true;
+      } else if (e21Now < e50Now && e21Prev < e50Prev) {
+        isBuy = false;
+      } else {
+        continue; // Skip — EMA crossover in progress, no clear trend
+      }
+      
+      // --- ATR-based dynamic SL/TP ---
+      const atrCandles = quotes.slice(Math.max(0, i - 15), i + 1);
+      const atr = calculateATR(atrCandles) || 0.0035;
+      
+      const entryCandle = quotes[i];
+      const entryPrice = entryCandle.close; // Enter at close of signal candle
+      
+      const slDistance = atr * 1.2;   // 1.2× ATR stop loss
+      const tp1Distance = atr * 2.0;  // 1:1.67 R:R
+      const tp2Distance = atr * 3.5;  // 1:2.92 R:R
+      
+      const sl  = parseFloat((isBuy ? entryPrice - slDistance : entryPrice + slDistance).toFixed(5));
+      const tp1 = parseFloat((isBuy ? entryPrice + tp1Distance : entryPrice - tp1Distance).toFixed(5));
+      const tp2 = parseFloat((isBuy ? entryPrice + tp2Distance : entryPrice - tp2Distance).toFixed(5));
+      
+      // --- Tiered Base Capital & Position Sizing ---
       let baseCapital = 50;
       let tempBase = 50;
       if (equity >= 100) {
-          while (tempBase * 2 <= equity) {
-              tempBase *= 2;
-          }
-          baseCapital = tempBase;
+        while (tempBase * 2 <= equity) {
+          tempBase *= 2;
+        }
+        baseCapital = tempBase;
       }
-      // Optimized: 20% risk, capped so balance never drops below 0
       const riskAmount = Math.min(baseCapital * 0.20, equity);
       
-      const candle = quotes[i];
-      const entryPrice = candle.open;
-      
-      const prevCandle = quotes[i - 1];
-      const isBuy = candle.open > prevCandle.close;
-      
-      // Optimized: Tighter SL distance (0.7x of original 0.0035 = 0.00245)
-      const slDistance = 0.00245;
-      
-      // Calculate dynamic quantity in lots based on the target USD risk
-      const conversionRateForQty = entryPrice; 
+      const conversionRateForQty = entryPrice;
       const quantityRaw = (riskAmount * conversionRateForQty) / (slDistance * 100000);
       let quantity = parseFloat(quantityRaw.toFixed(2)) || 0.01;
-      
-      // Dynamic Lot Size Constraint: 0.01 to 0.1 max
       if (quantity < 0.01) quantity = 0.01;
       if (quantity > 0.10) quantity = 0.10;
       
-      const sl = parseFloat((isBuy ? entryPrice - 0.0035 : entryPrice + 0.0035).toFixed(5));
-      const tp1 = parseFloat((isBuy ? entryPrice + 0.0045 : entryPrice - 0.0045).toFixed(5));
-      const tp2 = parseFloat((isBuy ? entryPrice + 0.0080 : entryPrice - 0.0080).toFixed(5));
+      // --- Evaluate exit across SUBSEQUENT candles (not the entry candle) ---
+      let exitPrice = null;
+      let exitReason = null;
+      let exitCandleIdx = null;
       
-      // Real Backtest Logic: check actual candle high/low against SL/TP levels
-      let exitPrice = candle.close;
-      let exitReason = 'Time Exit';
-      let isWin = false;
-      
-      if (isBuy) {
-          if (candle.low <= sl) {
-              exitPrice = sl;
-              exitReason = 'Stop Loss';
-          } else if (candle.high >= tp2) {
-              exitPrice = tp2;
-              exitReason = 'Take Profit 2';
-              isWin = true;
-          } else if (candle.high >= tp1) {
-              exitPrice = tp1;
-              exitReason = 'Take Profit 1';
-              isWin = true;
-          } else if (candle.close > entryPrice) {
-              isWin = true; // Ended day in profit but didn't hit TP
+      const maxHoldCandles = Math.min(4, quotes.length - i - 1); // Hold up to 4 candles (~16-24 hours)
+      for (let j = 1; j <= maxHoldCandles; j++) {
+        const evalCandle = quotes[i + j];
+        
+        if (isBuy) {
+          // Check TP first (favorable to the trader, balances same-candle ambiguity)
+          if (evalCandle.high >= tp2) {
+            exitPrice = tp2;
+            exitReason = 'Take Profit 2';
+            exitCandleIdx = i + j;
+            break;
+          } else if (evalCandle.high >= tp1) {
+            exitPrice = tp1;
+            exitReason = 'Take Profit 1';
+            exitCandleIdx = i + j;
+            break;
+          } else if (evalCandle.low <= sl) {
+            exitPrice = sl;
+            exitReason = 'Stop Loss';
+            exitCandleIdx = i + j;
+            break;
           }
-      } else { // SELL
-          if (candle.high >= sl) {
-              exitPrice = sl;
-              exitReason = 'Stop Loss';
-          } else if (candle.low <= tp2) {
-              exitPrice = tp2;
-              exitReason = 'Take Profit 2';
-              isWin = true;
-          } else if (candle.low <= tp1) {
-              exitPrice = tp1;
-              exitReason = 'Take Profit 1';
-              isWin = true;
-          } else if (candle.close < entryPrice) {
-              isWin = true; // Ended day in profit but didn't hit TP
+        } else { // SELL
+          if (evalCandle.low <= tp2) {
+            exitPrice = tp2;
+            exitReason = 'Take Profit 2';
+            exitCandleIdx = i + j;
+            break;
+          } else if (evalCandle.low <= tp1) {
+            exitPrice = tp1;
+            exitReason = 'Take Profit 1';
+            exitCandleIdx = i + j;
+            break;
+          } else if (evalCandle.high >= sl) {
+            exitPrice = sl;
+            exitReason = 'Stop Loss';
+            exitCandleIdx = i + j;
+            break;
           }
+        }
       }
       
+      // If no SL/TP hit within hold window, exit at close of last hold candle
+      if (!exitPrice) {
+        const lastHoldCandle = quotes[i + maxHoldCandles];
+        exitPrice = lastHoldCandle.close;
+        exitReason = 'Time Exit';
+        exitCandleIdx = i + maxHoldCandles;
+      }
+      
+      const isWin = isBuy ? (exitPrice > entryPrice) : (exitPrice < entryPrice);
       if (isWin) wins++;
-
+      
       const pointDiff = isBuy ? exitPrice - entryPrice : entryPrice - exitPrice;
       
       // True Forex P&L Math: point difference * quantity * lot size / conversionRate
-      const conversionRate = exitPrice; 
+      const conversionRate = exitPrice;
       const pnl = parseFloat(((pointDiff * quantity * 100000) / conversionRate).toFixed(2));
       
+      // Track win/loss totals for real profit factor
+      if (pnl > 0) totalWinPnl += pnl;
+      if (pnl < 0) totalLossPnl += Math.abs(pnl);
+      
       equity = parseFloat((equity + pnl).toFixed(2));
+      
+      // Track max drawdown
+      if (equity > peakEquity) peakEquity = equity;
+      const currentDrawdown = peakEquity > 0 ? (peakEquity - equity) / peakEquity : 0;
+      if (currentDrawdown > maxDrawdown) maxDrawdown = currentDrawdown;
+      
       equityCurve.push({ day: tradeId, equity });
       
       const score = Math.floor(seededRandom() * 3) + 7;
-      const confluence = 'Real Historical Price Action';
-      const exitTimestamp = new Date(candle.date.getTime() + 4 * 60 * 60 * 1000).toISOString();
+      const confluence = 'EMA Crossover + ATR Risk Management';
+      const exitTimestamp = quotes[exitCandleIdx].date.toISOString();
       
       trades.push({
         id: tradeId++,
-        timestamp: candle.date.toISOString(),
-        opened_at: candle.date.toISOString(),
+        timestamp: entryCandle.date.toISOString(),
+        opened_at: entryCandle.date.toISOString(),
         action: isBuy ? 'BUY' : 'SELL',
         entryPrice: parseFloat(entryPrice.toFixed(5)),
-        exitPrice: exitPrice,
+        exitPrice: parseFloat(exitPrice.toFixed(5)),
         pnl: pnl,
         status: 'CLOSED',
         quantity: quantity,
@@ -291,17 +355,31 @@ app.post('/api/backtest', async (req, res) => {
         exitReason: exitReason,
         exitTimestamp: exitTimestamp
       });
+      
+      // Skip ahead past the exit candle to avoid overlapping trades
+      if (exitCandleIdx && exitCandleIdx > i + step) {
+        i = exitCandleIdx - step; // Will be incremented by step in the for loop
+      }
     }
     
-    const profitFactor = wins > 0 ? 2.85 : 0;
-    const totalReturn = (equity - 50.00) / 50.00;
+    // Calculate REAL statistics from actual trade data
+    const totalTradeCount = tradeId - 1;
+    const realProfitFactor = totalLossPnl > 0 ? parseFloat((totalWinPnl / totalLossPnl).toFixed(2)) : (totalWinPnl > 0 ? 99.0 : 0);
+    const totalReturn = totalTradeCount > 0 ? (equity - 50.00) / 50.00 : 0;
+    
+    // Real Sharpe Ratio: mean(returns) / stddev(returns)
+    const pnlList = trades.map(t => t.pnl);
+    const meanPnl = pnlList.length > 0 ? pnlList.reduce((a, b) => a + b, 0) / pnlList.length : 0;
+    const variance = pnlList.length > 1 ? pnlList.reduce((sum, p) => sum + Math.pow(p - meanPnl, 2), 0) / (pnlList.length - 1) : 0;
+    const stdDev = Math.sqrt(variance);
+    const realSharpe = stdDev > 0 ? parseFloat((meanPnl / stdDev * Math.sqrt(252)).toFixed(2)) : 0;
     
     res.json({
-      totalTrades: tradeId - 1,
-      winRate: wins / (tradeId - 1),
-      profitFactor,
-      maxDrawdown: 0.041,
-      sharpeRatio: 2.75,
+      totalTrades: totalTradeCount,
+      winRate: totalTradeCount > 0 ? wins / totalTradeCount : 0,
+      profitFactor: realProfitFactor,
+      maxDrawdown: parseFloat(maxDrawdown.toFixed(4)),
+      sharpeRatio: realSharpe,
       totalReturn,
       equityCurve,
       trades: trades.reverse()

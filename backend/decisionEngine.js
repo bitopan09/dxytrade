@@ -35,7 +35,7 @@ async function generateSignal(
   const weeklyCPR = calculateWeeklyCPR(weeklyCandles);
   const now = new Date();
   const nowUTC = now.toISOString();
-  const threshold = parseInt(process.env.CONFLUENCE_THRESHOLD || 5);
+  const threshold = parseInt(process.env.CONFLUENCE_THRESHOLD || 3);
 
   // ============================================================
   // STEP 1: ALWAYS calculate confluence scores (for dashboard)
@@ -57,6 +57,7 @@ async function generateSignal(
     
     const score = Object.values(factors).reduce((sum, val) => sum + val, 0);
     results[direction] = { score, factors };
+    console.log(`[DECISION ENGINE] ${direction} Factor Breakdown: EMA=${factors.ema_stack} RSI=${factors.rsi_corridor} MACD=${factors.macd_confirm} CPR=${factors.cpr_proximity} COT=${factors.cot_bias} KEY=${factors.key_level} BOS=${factors.structure_break} PEER=${factors.peer_fx} VOL=${factors.volume_escalate} => TOTAL: ${score}/9`);
   }
   
   const buyScore = results['BUY'].score;
@@ -71,17 +72,20 @@ async function generateSignal(
   // --- GATE 1: Session Hour Check ---
   const hourUTC = now.getUTCHours();
   if (hourUTC < 8 || hourUTC >= 20) {
+    console.log(`[DECISION ENGINE] GATE BLOCKED: Session hours (current: ${hourUTC} UTC, allowed: 08-20 UTC)`);
     return { signal: 'NONE', score: bestScore, reason: `Outside London/NY session hours (08-20 UTC, Current: ${hourUTC} UTC)` };
   }
   
   // --- GATE 2: Macro Economic News Blackout ---
   if (isBlackedOut(newsEvents, nowUTC)) {
+    console.log('[DECISION ENGINE] GATE BLOCKED: News blackout active');
     return { signal: 'NONE', score: bestScore, reason: 'Economic calendar high-impact blackout active' };
   }
   
   // --- GATE 3: Daily Trade Limit Circuit Breaker ---
   const dailyLimit = parseInt(process.env.DAILY_TRADE_LIMIT || 2);
   if ((botState.dailyTradeCount || 0) >= dailyLimit) {
+    console.log(`[DECISION ENGINE] GATE BLOCKED: Daily limit reached (${botState.dailyTradeCount}/${dailyLimit})`);
     return { signal: 'NONE', score: bestScore, reason: `Daily trade limit reached (${botState.dailyTradeCount}/${dailyLimit})` };
   }
   
@@ -91,6 +95,7 @@ async function generateSignal(
     const cooldownExpiry = new Date(cooldownStart.getTime() + 24 * 60 * 60 * 1000);
     if (now < cooldownExpiry) {
       const remainingHrs = ((cooldownExpiry - now) / (1000 * 60 * 60)).toFixed(1);
+      console.log(`[DECISION ENGINE] GATE BLOCKED: Loss cooldown active (${remainingHrs} hrs remaining)`);
       return { signal: 'NONE', score: bestScore, reason: `24H Cooldown active after consecutive losses (${remainingHrs} hrs remaining)` };
     }
   }
@@ -101,6 +106,7 @@ async function generateSignal(
   
   // --- GATE 5: Conflicting Signal Guard ---
   if (buyScore >= threshold && sellScore >= threshold) {
+    console.log(`[DECISION ENGINE] GATE BLOCKED: Conflicting signals (BUY: ${buyScore}, SELL: ${sellScore})`);
     return { 
       signal: 'NONE', 
       score: bestScore,
@@ -129,6 +135,7 @@ async function generateSignal(
     };
   }
   
+  console.log(`[DECISION ENGINE] NO SIGNAL: Score below threshold (BUY: ${buyScore}/9, SELL: ${sellScore}/9, Required: ${threshold})`);
   return { 
     signal: 'NONE', 
     score: bestScore,

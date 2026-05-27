@@ -215,8 +215,31 @@ async function fetchPeerFXCandles(symbol, count = 100) {
       volume: parseFloat(r.Volume) || 0
     }));
   } catch (error) {
-    console.error(`Error fetching Peer FX ${symbol}:`, error.message);
-    return []; // Return empty, the peer correlation strategy will handle empty lists gracefully
+    console.error(`Error fetching Peer FX ${symbol} from Stooq, trying Yahoo Finance:`, error.message);
+    try {
+      // Map stooq symbol to Yahoo symbol
+      const yahooSymbol = symbol.toLowerCase() === 'eurusd' ? 'EURUSD=X' : (symbol.toLowerCase() === 'usdjpy' ? 'JPY=X' : null);
+      if (!yahooSymbol) return [];
+      
+      const url = `https://query1.financeapp.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1h&range=10d`;
+      const response = await axios.get(url, { headers: AXIOS_HEADERS, timeout: 10000 });
+      const result = response.data?.chart?.result?.[0];
+      if (!result) return [];
+      
+      const timestamps = result.timestamp || [];
+      const quote = result.indicators?.quote?.[0] || {};
+      const closes = quote.close || [];
+      const candles = [];
+      for (let i = 0; i < timestamps.length; i++) {
+        if (closes[i] !== null && closes[i] !== undefined) {
+          candles.push({ close: closes[i] });
+        }
+      }
+      return candles.slice(-count);
+    } catch (yahooErr) {
+      console.error(`Yahoo fallback for Peer FX ${symbol} also failed:`, yahooErr.message);
+      return []; // Return empty, the peer correlation strategy will handle empty lists gracefully
+    }
   }
 }
 

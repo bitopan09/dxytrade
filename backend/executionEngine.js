@@ -30,8 +30,8 @@ async function executeTrade(signal, quantity = 0.15, isManual = false, livePrice
     const currentBalance = db.getLatestBalance();
     
     // === EQUITY FLOOR PROTECTION ===
-    // Never risk the base capital. If balance drops to $50, stop all trading.
-    const EQUITY_FLOOR = 50.00;
+    // Never risk the entire base capital. If balance drops to $25, stop all trading.
+    const EQUITY_FLOOR = 25.00;
     if (currentBalance <= EQUITY_FLOOR) {
       return {
         success: false,

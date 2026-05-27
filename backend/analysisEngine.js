@@ -244,7 +244,10 @@ function checkVolumeEscalation(candles) {
   const recentVol = recent.reduce((s, c) => s + (c.volume || 0), 0) / 5;
   const priorVol = prior.reduce((s, c) => s + (c.volume || 0), 0) / 5;
   
-  if (priorVol === 0) return 0; 
+  if (priorVol === 0) {
+    // If prior volume was exactly 0, any recent volume > 0 is an escalation
+    return recentVol > 0 ? 1 : 0;
+  }
   return (recentVol >= priorVol * 1.15) ? 1 : 0;
 }
 
