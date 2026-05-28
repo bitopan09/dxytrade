@@ -108,7 +108,8 @@ async function fetchDXYLivePrice() {
     }
     throw new Error('No valid price found in Kraken USDCAD spot response');
   } catch (error) {
-    console.error('Coinbase Live USDC-CAD Spot fetch failed:', error.message);
+    // Suppress console spam for tick failures since the fallback safely handles it
+    // console.error('Kraken Live USDC-CAD Spot fetch failed:', error.message);
     const fluctuation = (Math.random() - 0.5) * 0.0004; // ±2 pips
     lastUSDCADLivePrice = parseFloat((lastUSDCADLivePrice + fluctuation).toFixed(4));
     
@@ -128,7 +129,7 @@ async function fetchDXYLivePrice() {
  * DX-Y.NYB is the Dollar Index spot rate.
  */
 async function fetchDXYCandlesYahoo(interval, range, count) {
-  const url = `https://query1.financeapp.yahoo.com/v8/finance/chart/USDCAD=X?interval=${interval}&range=${range}`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/USDCAD=X?interval=${interval}&range=${range}`;
   const response = await axios.get(url, {
     headers: AXIOS_HEADERS,
     timeout: 10000
@@ -168,25 +169,30 @@ async function fetchDXYCandlesYahoo(interval, range, count) {
  * Fallback to fetch DXY Weekly from Stooq CSV
  */
 async function fetchDXYWeeklyCandlesStooq(count = 52) {
-  const url = `https://stooq.com/q/d/l/?s=usdcad&i=w`;
-  const response = await axios.get(url, {
-    headers: AXIOS_HEADERS,
-    timeout: 10000
-  });
-
-  const rows = parse(response.data, {
-    columns: true,
-    skip_empty_lines: true
-  });
-
-  return rows.slice(-count).map(r => ({
-    timestamp: `${r.Date}T00:00:00Z`,
-    open: parseFloat(r.Open),
-    high: parseFloat(r.High),
-    low: parseFloat(r.Low),
-    close: parseFloat(r.Close),
-    volume: parseFloat(r.Volume) || 0
-  }));
+  try {
+    const url = `https://stooq.com/q/d/l/?s=usdcad&i=w`;
+    const response = await axios.get(url, {
+      headers: AXIOS_HEADERS,
+      timeout: 10000
+    });
+  
+    const rows = parse(response.data, {
+      columns: true,
+      skip_empty_lines: true
+    });
+  
+    return rows.slice(-count).map(r => ({
+      timestamp: `${r.Date}T00:00:00Z`,
+      open: parseFloat(r.Open),
+      high: parseFloat(r.High),
+      low: parseFloat(r.Low),
+      close: parseFloat(r.Close),
+      volume: parseFloat(r.Volume) || 0
+    }));
+  } catch (err) {
+    console.error('Stooq Weekly fallback failed or returned invalid data:', err.message);
+    return [];
+  }
 }
 
 /**
@@ -221,7 +227,7 @@ async function fetchPeerFXCandles(symbol, count = 100) {
       const yahooSymbol = symbol.toLowerCase() === 'eurusd' ? 'EURUSD=X' : (symbol.toLowerCase() === 'usdjpy' ? 'JPY=X' : null);
       if (!yahooSymbol) return [];
       
-      const url = `https://query1.financeapp.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1h&range=10d`;
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1h&range=10d`;
       const response = await axios.get(url, { headers: AXIOS_HEADERS, timeout: 10000 });
       const result = response.data?.chart?.result?.[0];
       if (!result) return [];

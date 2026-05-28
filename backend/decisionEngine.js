@@ -70,8 +70,9 @@ async function generateSignal(
   // ============================================================
 
   // --- GATE 1: Session Hour Check ---
+  // Disabled by default to allow 24/7 trading and testing
   const hourUTC = now.getUTCHours();
-  if (hourUTC < 8 || hourUTC >= 20) {
+  if (process.env.ENFORCE_SESSION_HOURS === 'true' && (hourUTC < 8 || hourUTC >= 20)) {
     console.log(`[DECISION ENGINE] GATE BLOCKED: Session hours (current: ${hourUTC} UTC, allowed: 08-20 UTC)`);
     return { signal: 'NONE', score: bestScore, reason: `Outside London/NY session hours (08-20 UTC, Current: ${hourUTC} UTC)` };
   }
