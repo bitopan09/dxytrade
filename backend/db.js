@@ -153,7 +153,8 @@ const dbOperations = {
     const today = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
     // Match date part in format (e.g. DD/MM/YYYY or YYYY-MM-DD depending on locale)
     const all = getAllTradesStmt.all();
-    return all.filter(t => t.ist_date && t.ist_date.includes(today));
+    // Filter out manual UI trades so they don't count as automated bot trades
+    return all.filter(t => t.ist_date && t.ist_date.includes(today) && !(t.entry_reason && t.entry_reason.includes('manual_trade')));
   },
 
   // State Persistence
