@@ -174,6 +174,16 @@ const dbOperations = {
 
   updateBalance: (usdBalance) => {
     insertBalanceStmt.run(usdBalance);
+  },
+
+  // Admin Reset
+  clearAllData: () => {
+    db.exec(`
+      DELETE FROM trades;
+      DELETE FROM bot_state;
+      DELETE FROM balance;
+      INSERT INTO balance (usd_balance) VALUES (50.0);
+    `);
   }
 };
 

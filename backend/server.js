@@ -143,6 +143,22 @@ app.get('/api/candles', (req, res) => {
   res.json(db.getCandles(limit));
 });
 
+// 10a. Admin Hard Reset
+app.post('/api/admin/reset', (req, res) => {
+  try {
+    db.clearAllData();
+    // Reset in-memory state
+    botState.dailyTradeCount = 0;
+    botState.consecutiveLosses = 0;
+    botState.cooldownStart = null;
+    botState.currentScore = 0;
+    botState.currentSignal = 'NEUTRAL';
+    res.json({ success: true, message: 'Database and bot state fully reset.' });
+  } catch (err) {
+    res.status(500).json({ error: 'Reset failed: ' + err.message });
+  }
+});
+
 // 10b. Backtest simulation using real USDC-CAD historical data
 app.post('/api/backtest', async (req, res) => {
   try {
