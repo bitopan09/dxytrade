@@ -60,12 +60,19 @@ async function executeTrade(signal, quantity = 0.15, isManual = false, livePrice
     const quantityRaw = (riskAmount * entryPrice) / (slDistance * LOT_SIZE);
     
     // Use dynamic quantity for bot trades, preserve manual quantity if passed for manual trades
-    let finalQuantity = isManual ? quantity : (parseFloat(quantityRaw.toFixed(2)) || 0.01);
+    let finalQuantity = isManual ? parseFloat(quantity) : (parseFloat(quantityRaw.toFixed(2)) || 0.01);
     
     // Dynamic Lot Size Constraint: 0.01 to 0.1 max
     if (!isManual) {
       if (finalQuantity < 0.01) finalQuantity = 0.01;
       if (finalQuantity > 0.10) finalQuantity = 0.10;
+    } else {
+      // Auto-scale manual trade quantity if it exceeds max affordable margin
+      const maxAffordableQty = currentBalance / (LOT_SIZE * 0.005);
+      if (finalQuantity > maxAffordableQty) {
+        finalQuantity = parseFloat((maxAffordableQty * 0.95).toFixed(2));
+      }
+      if (finalQuantity < 0.01) finalQuantity = 0.01;
     }
     
     // Check if we have enough simulated balance to support trade margin (rough estimate)
